@@ -1,159 +1,62 @@
 package com.distributed;
 
-import java.io.*;
-import java.net.*;
+import org.zeromq.ZMQ;
+import java.nio.ByteBuffer;
 import java.util.*;
-import java.io.*;
-import java.net.*;
-import java.util.*;
-
-import java.io.*;
-import java.net.*;
-import java.util.*;
-
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.ConcurrentLinkedQueue;
-
-
 
 public class Worker {
+
     private final int workerId;
-    private final int[] vectorClock;
-    private final Queue<PendingMessage> pendingMessages = new ConcurrentLinkedQueue<>();
+    private int lamportClock = 0; // Lamport clock
 
-    public Worker(int workerId, int numProcesses) {
+    public Worker(int workerId) {
         this.workerId = workerId;
-        this.vectorClock = new int[numProcesses];
     }
 
-    public void start() {
-        try (ServerSocket serverSocket = new ServerSocket(10000 + workerId)) {
-            System.out.println("Worker " + workerId + " is running...");
+    public static void main(String[] args) {
+        int workerId = 4; // Worker ID passed as a command-line argument
+        Worker worker = new Worker(workerId);
+        worker.run();
+    }
+
+    public void run() {
+        try (ZMQ.Context context = ZMQ.context(1)) {
+            // Subscribing to the main process's PUB channel
+            ZMQ.Socket subscriber = context.socket(ZMQ.SUB);
+            subscriber.connect("tcp://localhost:5555");
+            subscriber.subscribe(""); // Subscribe to all messages
+
+            // Create a PUB socket to send processed data back to Main
+            ZMQ.Socket publisher = context.socket(ZMQ.PUB);
+            publisher.bind("tcp://localhost:5556"); // Workers publish processed data here
+
             while (true) {
-                try (Socket clientSocket = serverSocket.accept()) {
-                    handleClient(clientSocket);
-                }
+                // Receive chunk and Lamport clock from the previous worker or main
+                byte[] data = subscriber.recv(0);
+                ByteBuffer buffer = ByteBuffer.wrap(data);
+                int receivedClock = buffer.getInt();
+                byte[] chunk = new byte[buffer.remaining()];
+                buffer.get(chunk);
+
+                // Update Lamport clock
+                lamportClock = Math.max(lamportClock, receivedClock) + 1;
+
+                // Process the chunk
+                byte[] processedChunk = processChunk(chunk);
+
+                // Send the processed chunk to the next worker or back to the main process
+                publisher.send(processedChunk);
             }
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void handleClient(Socket clientSocket) {
-        try (ObjectInputStream input = new ObjectInputStream(clientSocket.getInputStream());
-             ObjectOutputStream output = new ObjectOutputStream(clientSocket.getOutputStream())) {
-
-            // Receive words and vector clock
-            @SuppressWarnings("unchecked")
-            List<Word> receivedWords = (List<Word>) input.readObject();
-            List<Integer> receivedClock = (List<Integer>) input.readObject();
-
-            // Update vector clock
-            updateVectorClock(receivedClock);
-
-            // Process words
-            List<Word> processedWords = processWords(receivedWords);
-            System.out.println(processedWords);
-            // Add to pending queue and check for causal delivery
-            pendingMessages.add(new PendingMessage(processedWords, convertArrayToList(vectorClock)));
-            processPendingQueue(output);
 
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private List<Word> processWords(List<Word> words) {
-        List<Word> processedWords = new ArrayList<>();
-        for (Word word : words) {
-            String processedText = word.getText().toUpperCase();
-            processedWords.add(word.toBuilder()
-                    .setText(processedText)
-                    .clearVectorClock()
-                    .addAllVectorClock(convertArrayToList(vectorClock))
-                    .setPosition(word.getPosition())
-                    .build());
-        }
-        return processedWords;
-    }
-
-
-    private void processPendingQueue(ObjectOutputStream output) throws IOException {
-        boolean delivered = true;
-        while (delivered) { // Keep processing as long as there are deliverable messages
-            delivered = false;
-            Iterator<PendingMessage> iterator = pendingMessages.iterator();
-            while (iterator.hasNext()) {
-                PendingMessage message = iterator.next();
-                if (canDeliver(message.vectorClock)) {
-                    // Deliver the message
-                    output.writeObject(message.words);
-                    output.writeObject(message.vectorClock);
-                    output.flush();
-                    iterator.remove();
-                    delivered = true;
-                }
-            }
-        }
-    }
-
-    private boolean canDeliver(List<Integer> receivedClock) {
-        for (int i = 0; i < vectorClock.length; i++) {
-            if (receivedClock.get(i) > vectorClock[i]) {
-                return false; // Dependency not met
-            }
-        }
-        return true; // All dependencies are satisfied
-    }
-
-
-    private void updateVectorClock(List<Integer> receivedClock) {
-        for (int i = 0; i < vectorClock.length; i++) {
-            vectorClock[i] = Math.max(vectorClock[i], receivedClock.get(i));
-        }
-        incrementClock(workerId);
-    }
-
-    private void incrementClock(int processId) {
-        vectorClock[processId]++;
-    }
-
-    private List<Integer> convertArrayToList(int[] array) {
-        List<Integer> list = new ArrayList<>();
-        for (int value : array) {
-            list.add(value);
-        }
-        return list;
-    }
-
-    private static class PendingMessage {
-        List<Word> words;
-        List<Integer> vectorClock;
-
-        public PendingMessage(List<Word> words, List<Integer> vectorClock) {
-            this.words = words;
-            this.vectorClock = vectorClock;
-        }
-    }
-
-    public static void main(String[] args) {
-
-
-       //int workerId = 4;
-        int numProcesses = 5;
-
-   //     Worker worker = new Worker(workerId, numProcesses);
-    //    worker.start();
-
-        for (int i = 0; i < numProcesses; i++) {
-            final int workerId = i;
-            new Thread(()->{
-                Worker worker = new Worker(workerId, numProcesses);
-                worker.start();
-            }).start();
-        }
-
+    // Process the chunk of data (this is a stub; you can modify as per the project requirements)
+    private byte[] processChunk(byte[] chunk) {
+        // Example: just convert the bytes to uppercase
+        String processed = new String(chunk).toUpperCase();
+        return processed.getBytes();
     }
 }

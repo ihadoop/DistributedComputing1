@@ -1,35 +1,16 @@
 package com.distributed;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.io.*;
-import java.net.*;
-import java.util.*;
-
+import org.zeromq.ZMQ;
 
 import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.*;
-
-
-import java.io.*;
-import java.net.*;
+import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
 
 public class Main {
-    private static final int NUM_WORKERS = 5; // Total number of workers
-    private final int[] vectorClock = new int[NUM_WORKERS]; // Main's vector clock
+
+    private static final int NUM_WORKERS = 5;
+    private int lamportClock = 0; // Lamport clock
 
     public static void main(String[] args) {
         Main main = new Main();
@@ -39,29 +20,37 @@ public class Main {
     public void run() {
         try {
             Scanner scanner = new Scanner(System.in);
-            System.out.println("Enter a paragraph:");
-            String paragraph = scanner.nextLine();
+            System.out.println("Enter the path of the file:");
+            String filePath = scanner.nextLine();
 
-            // Split paragraph into words
-            String[] words = paragraph.split("\\s+");
-            List<List<Word>> wordBatches = distributeWords(words);
+            // Read the file into byte array
+            File file = new File(filePath);
+            byte[] fileBytes = new byte[(int) file.length()];
+            try (FileInputStream fileInputStream = new FileInputStream(file)) {
+                fileInputStream.read(fileBytes);
+            }
 
-            // Send words to workers
+            // Split the file into 10-byte chunks
+            List<byte[]> fileChunks = splitFileIntoChunks(fileBytes, 10);
+
+            // Setup ZeroMQ context and PUB socket
+            ZMQ.Context context = ZMQ.context(1);
+            ZMQ.Socket publisher = context.socket(ZMQ.PUB);
+            publisher.bind("tcp://*:5555");
+
+            // Send chunks randomly to workers
+            Random random = new Random();
             ExecutorService executor = Executors.newFixedThreadPool(NUM_WORKERS);
-            List<Socket> workerSockets = new ArrayList<>();
             for (int i = 0; i < NUM_WORKERS; i++) {
                 int workerId = i;
                 executor.submit(() -> {
                     try {
-                        Socket socket = new Socket("localhost", 10000 + workerId);
-                        synchronized (workerSockets) {
-                            workerSockets.add(socket); // Keep socket open for later communication
+                        for (byte[] chunk : fileChunks) {
+                            if (random.nextInt(NUM_WORKERS) == workerId) {
+                                lamportClock++; // Increment Lamport clock
+                                publisher.send(serializeChunk(chunk, lamportClock));
+                            }
                         }
-                        ObjectOutputStream output = new ObjectOutputStream(socket.getOutputStream());
-                        incrementClock(0); // Increment Main's clock
-                        output.writeObject(wordBatches.get(workerId)); // Send batch to the worker
-                        output.writeObject(convertArrayToList(vectorClock));
-                        output.flush();
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
@@ -74,76 +63,64 @@ public class Main {
             System.out.println("Waiting 15 seconds before collecting results...");
             Thread.sleep(15000);
 
-            // Collect results from workers
-            List<Word> collectedResults = new ArrayList<>();
+            // Setup ZeroMQ subscription to collect data from workers
+            ZMQ.Socket subscriber = context.socket(ZMQ.SUB);
+            subscriber.connect("tcp://localhost:5556");
+            subscriber.subscribe(""); // Subscribe to all messages from workers
+
+            // Collect processed data from workers
+            List<byte[]> collectedData = new ArrayList<>();
             for (int i = 0; i < NUM_WORKERS; i++) {
-                try (Socket socket = workerSockets.get(i);
-                     ObjectInputStream input = new ObjectInputStream(socket.getInputStream())) {
-
-                    @SuppressWarnings("unchecked")
-                    List<Word> processedWords = (List<Word>) input.readObject();
-                    collectedResults.addAll(processedWords);
-
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
+                byte[] result = subscriber.recv(0);
+                collectedData.add(result);
             }
 
-            // Sort results by position (original order), and use vector clock as secondary criterion
-            collectedResults.sort((word1, word2) -> {
-                // Sort primarily by original position
-                int posComparison = Integer.compare(word1.getPosition(), word2.getPosition());
-                if (posComparison != 0) {
-                    return posComparison;
-                }
+            // Combine all collected data
+            byte[] combinedData = combineData(collectedData);
 
-                // If positions are the same, sort by vector clock for causality
-                List<Integer> clock1 = word1.getVectorClockList();
-                List<Integer> clock2 = word2.getVectorClockList();
-                for (int i = 0; i < Math.min(clock1.size(), clock2.size()); i++) {
-                    int cmp = Integer.compare(clock1.get(i), clock2.get(i));
-                    if (cmp != 0) {
-                        return cmp;
-                    }
-                }
-                return 0;
-            });
+            // Save the data to a new file on the Desktop
+            File outputFile = new File(System.getProperty("user.home") + "/Desktop/received_file.txt");
+            try (FileOutputStream fos = new FileOutputStream(outputFile)) {
+                fos.write(combinedData);
+                System.out.println("Data collected and saved to: " + outputFile.getAbsolutePath());
+            }
 
-            // Print the final results
-            System.out.println("Collected results:");
-            collectedResults.forEach(word -> System.out.print(word.getText() + " "));
+            // Close ZeroMQ sockets
+            publisher.close();
+            subscriber.close();
+            context.term();
+
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private List<List<Word>> distributeWords(String[] words) {
-        List<List<Word>> batches = new ArrayList<>();
-        for (int i = 0; i < NUM_WORKERS; i++) {
-            batches.add(new ArrayList<>());
+    private List<byte[]> splitFileIntoChunks(byte[] fileBytes, int chunkSize) {
+        List<byte[]> chunks = new ArrayList<>();
+        for (int i = 0; i < fileBytes.length; i += chunkSize) {
+            int end = Math.min(i + chunkSize, fileBytes.length);
+            byte[] chunk = Arrays.copyOfRange(fileBytes, i, end);
+            chunks.add(chunk);
         }
-
-        Random random = new Random();
-        for (int i = 0; i < words.length; i++) {
-            int workerId = random.nextInt(NUM_WORKERS); // Randomly assign a word to a worker
-            batches.get(workerId).add(Word.newBuilder()
-                    .setText(words[i])
-                    .addAllVectorClock(convertArrayToList(vectorClock))
-                    .setPosition(i) // Preserve the original position
-                    .build());
-        }
-        return batches;
+        return chunks;
     }
 
-    private void incrementClock(int processId) {
-        vectorClock[processId]++;
+    private byte[] combineData(List<byte[]> collectedData) {
+        int totalSize = collectedData.stream().mapToInt(arr -> arr.length).sum();
+        byte[] combinedData = new byte[totalSize];
+        int currentPosition = 0;
+        for (byte[] chunk : collectedData) {
+            System.arraycopy(chunk, 0, combinedData, currentPosition, chunk.length);
+            currentPosition += chunk.length;
+        }
+        return combinedData;
     }
 
-    private List<Integer> convertArrayToList(int[] array) {
-        List<Integer> list = new ArrayList<>();
-        for (int value : array) {
-            list.add(value);
-        }
-        return list;
+    // Serialize the chunk and attach the Lamport clock value
+    private byte[] serializeChunk(byte[] chunk, int lamportClock) {
+        ByteBuffer buffer = ByteBuffer.allocate(chunk.length + Integer.BYTES);
+        buffer.putInt(lamportClock);
+        buffer.put(chunk);
+        return buffer.array();
     }
 }
