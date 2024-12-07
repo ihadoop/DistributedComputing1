@@ -11,7 +11,7 @@ public class Main {
 
     private static final int NUM_WORKERS = 5;  // Total number of workers
     private int lamportClock = 0;  // Lamport clock for the main process
-
+ private int times = 0;
     public static void main(String[] args) {
         Main main = new Main();
         main.run();
@@ -20,28 +20,16 @@ public class Main {
     public void run() {
         try {
             // Initialize ZeroMQ context
-            ZMQ.Context context = ZMQ.context(1);
-
-            // Create a publisher socket to send chunks to workers
-            ZMQ.Socket publisher = context.socket(ZMQ.PUB);
-            publisher.bind("tcp://*:5555");  // Main process binds to 5555 to send chunks to workers
-
-            // Allow workers to connect before sending data
-            Thread.sleep(1000);  // Small delay to allow workers to connect
-
-            // Create multiple subscriber sockets to receive data from each worker
-            List<ZMQ.Socket> subscribers = new ArrayList<>();
-            for (int i = 0; i < NUM_WORKERS; i++) {
-                ZMQ.Socket subscriber = context.socket(ZMQ.SUB);
-                subscriber.connect("tcp://localhost:" + (5556 + i));  // Main process subscribes to workers' unique ports
-                subscriber.subscribe("");  // Subscribe to all topics from this worker
-                subscribers.add(subscriber);
-            }
-
+            Publisher publisher = new Publisher(5555);
             // Prompt user for the file path
             Scanner scanner = new Scanner(System.in);
             System.out.println("Enter the path of the file:");
             String filePath = scanner.nextLine();
+            //String filePath = "/Users/sunshine/Downloads/Worker.java";
+            // Create multiple subscriber sockets to receive data from each worker
+            //Thread.sleep(20000);
+            //List<ZMQ.Socket> subscribers = new ArrayList<>();
+
 
             // Read the file into byte array
             File file = new File(filePath);
@@ -50,43 +38,49 @@ public class Main {
                 fileInputStream.read(fileBytes);
             }
 
+            final List<byte[]> collectedData = new ArrayList<>();
+            for (int i = 0; i < NUM_WORKERS; i++) {
+                final  int workerId = i;
+                CountDownLatch latch = new CountDownLatch(1);
+                new Thread(() -> {
+                    Subscriber subscriber = new Subscriber(workerId+"",8888+workerId);
+                    latch.countDown();
+                    while (true) {
+                        byte[] result =  subscriber.run();;;  // Receive processed chunk from worker
+                        System.out.println("Arrays.toString(result)");
+                        collectedData.add(result);
+                    }
+                }).start();
+
+                latch.await();  // Wait until countDown() is called on the latch
+
+            }
+
             // Split the file into 10-byte chunks
             List<byte[]> fileChunks = splitFileIntoChunks(fileBytes, 10);
 
             // Send chunks to workers
-            ExecutorService executor = Executors.newFixedThreadPool(NUM_WORKERS);
+            //ExecutorService executor = Executors.newFixedThreadPool(NUM_WORKERS*10);
             for (byte[] chunk : fileChunks) {
-                executor.submit(() -> {
+
                     try {
                         // Randomly select a worker (workerId)
                         int workerId = new Random().nextInt(NUM_WORKERS);
                         lamportClock++;  // Increment Lamport clock
                         System.out.println("Sending chunk to worker " + workerId);
-
+                        System.out.println("Sending chunk to worker " + ++times);
                         // Connect to the worker's unique port (5556 + workerId)
-                        ZMQ.Socket workerPublisher = context.socket(ZMQ.PUB);
-                        workerPublisher.connect("tcp://localhost:" + (5556 + workerId));  // Each worker listens on a unique port
-                        workerPublisher.send(workerId + " " + serializeChunk(chunk, lamportClock));  // Send chunk to worker with topic as workerId
-                        workerPublisher.close();
+                        publisher.send(workerId+"", serializeChunk(chunk, lamportClock));  // Send chunk to worker with topic as workerId
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
-                });
             }
-
-            executor.shutdown();
-            executor.awaitTermination(5, TimeUnit.SECONDS);
 
             // Wait for 15 seconds before collecting results
             System.out.println("Waiting 15 seconds before collecting results...");
             Thread.sleep(15000);
 
-            // Collect processed data from workers
-            List<byte[]> collectedData = new ArrayList<>();
-            for (ZMQ.Socket subscriber : subscribers) {
-                byte[] result = subscriber.recv(0);  // Receive processed chunk from worker
-                collectedData.add(result);
-            }
+
 
             // Combine all collected data
             byte[] combinedData = combineData(collectedData);
@@ -98,12 +92,6 @@ public class Main {
                 System.out.println("Data collected and saved to: " + outputFile.getAbsolutePath());
             }
 
-            // Close ZeroMQ sockets
-            publisher.close();
-            for (ZMQ.Socket subscriber : subscribers) {
-                subscriber.close();
-            }
-            context.term();
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -121,14 +109,30 @@ public class Main {
     }
 
     private byte[] combineData(List<byte[]> collectedData) {
+
         int totalSize = collectedData.stream().mapToInt(arr -> arr.length).sum();
         byte[] combinedData = new byte[totalSize];
+        Map<Integer,byte[]> maps =  new TreeMap<>();
+
         int currentPosition = 0;
         for (byte[] chunk : collectedData) {
-            System.arraycopy(chunk, 0, combinedData, currentPosition, chunk.length);
-            currentPosition += chunk.length;
+            ByteBuffer buffer = ByteBuffer.wrap(chunk);
+
+            int lamportClock = buffer.getInt();  // Add Lamport clock (4 bytes)
+
+            byte [] data = new byte[buffer.remaining()];
+            buffer.get(data);  // Add the
+            System.out.println(lamportClock+"---"+data.length+"---"+collectedData.size());
+            maps.put(lamportClock, data);
         }
-        return combinedData;
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+
+        for (Map.Entry<Integer, byte[]> entry : maps.entrySet()) {
+            outputStream.writeBytes(entry.getValue());
+
+        }
+
+        return outputStream.toByteArray();
     }
 
     // Serialize the chunk and attach the Lamport clock value
