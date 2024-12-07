@@ -9,8 +9,8 @@ import java.util.concurrent.*;
 
 public class Main {
 
-    private static final int NUM_WORKERS = 5;
-    private int lamportClock = 0; // Lamport clock
+    private static final int NUM_WORKERS = 5;  // Total number of workers
+    private int lamportClock = 0;  // Lamport clock for the main process
 
     public static void main(String[] args) {
         Main main = new Main();
@@ -19,6 +19,26 @@ public class Main {
 
     public void run() {
         try {
+            // Initialize ZeroMQ context
+            ZMQ.Context context = ZMQ.context(1);
+
+            // Create a publisher socket to send chunks to workers
+            ZMQ.Socket publisher = context.socket(ZMQ.PUB);
+            publisher.bind("tcp://*:5555");  // Main process binds to 5555 to send chunks to workers
+
+            // Allow workers to connect before sending data
+            Thread.sleep(1000);  // Small delay to allow workers to connect
+
+            // Create multiple subscriber sockets to receive data from each worker
+            List<ZMQ.Socket> subscribers = new ArrayList<>();
+            for (int i = 0; i < NUM_WORKERS; i++) {
+                ZMQ.Socket subscriber = context.socket(ZMQ.SUB);
+                subscriber.connect("tcp://localhost:" + (5556 + i));  // Main process subscribes to workers' unique ports
+                subscriber.subscribe("");  // Subscribe to all topics from this worker
+                subscribers.add(subscriber);
+            }
+
+            // Prompt user for the file path
             Scanner scanner = new Scanner(System.in);
             System.out.println("Enter the path of the file:");
             String filePath = scanner.nextLine();
@@ -33,45 +53,38 @@ public class Main {
             // Split the file into 10-byte chunks
             List<byte[]> fileChunks = splitFileIntoChunks(fileBytes, 10);
 
-            // Setup ZeroMQ context and PUB socket
-            ZMQ.Context context = ZMQ.context(1);
-            ZMQ.Socket publisher = context.socket(ZMQ.PUB);
-            publisher.bind("tcp://*:5555");
-
-            // Send chunks randomly to workers
-            Random random = new Random();
+            // Send chunks to workers
             ExecutorService executor = Executors.newFixedThreadPool(NUM_WORKERS);
-            for (int i = 0; i < NUM_WORKERS; i++) {
-                int workerId = i;
+            for (byte[] chunk : fileChunks) {
                 executor.submit(() -> {
                     try {
-                        for (byte[] chunk : fileChunks) {
-                            if (random.nextInt(NUM_WORKERS) == workerId) {
-                                lamportClock++; // Increment Lamport clock
-                                publisher.send(serializeChunk(chunk, lamportClock));
-                            }
-                        }
+                        // Randomly select a worker (workerId)
+                        int workerId = new Random().nextInt(NUM_WORKERS);
+                        lamportClock++;  // Increment Lamport clock
+                        System.out.println("Sending chunk to worker " + workerId);
+
+                        // Connect to the worker's unique port (5556 + workerId)
+                        ZMQ.Socket workerPublisher = context.socket(ZMQ.PUB);
+                        workerPublisher.connect("tcp://localhost:" + (5556 + workerId));  // Each worker listens on a unique port
+                        workerPublisher.send(workerId + " " + serializeChunk(chunk, lamportClock));  // Send chunk to worker with topic as workerId
+                        workerPublisher.close();
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
                 });
             }
+
             executor.shutdown();
             executor.awaitTermination(5, TimeUnit.SECONDS);
 
-            // Wait 15 seconds before collecting results
+            // Wait for 15 seconds before collecting results
             System.out.println("Waiting 15 seconds before collecting results...");
             Thread.sleep(15000);
 
-            // Setup ZeroMQ subscription to collect data from workers
-            ZMQ.Socket subscriber = context.socket(ZMQ.SUB);
-            subscriber.connect("tcp://localhost:5556");
-            subscriber.subscribe(""); // Subscribe to all messages from workers
-
             // Collect processed data from workers
             List<byte[]> collectedData = new ArrayList<>();
-            for (int i = 0; i < NUM_WORKERS; i++) {
-                byte[] result = subscriber.recv(0);
+            for (ZMQ.Socket subscriber : subscribers) {
+                byte[] result = subscriber.recv(0);  // Receive processed chunk from worker
                 collectedData.add(result);
             }
 
@@ -87,7 +100,9 @@ public class Main {
 
             // Close ZeroMQ sockets
             publisher.close();
-            subscriber.close();
+            for (ZMQ.Socket subscriber : subscribers) {
+                subscriber.close();
+            }
             context.term();
 
         } catch (Exception e) {
@@ -119,8 +134,8 @@ public class Main {
     // Serialize the chunk and attach the Lamport clock value
     private byte[] serializeChunk(byte[] chunk, int lamportClock) {
         ByteBuffer buffer = ByteBuffer.allocate(chunk.length + Integer.BYTES);
-        buffer.putInt(lamportClock);
-        buffer.put(chunk);
+        buffer.putInt(lamportClock);  // Add Lamport clock (4 bytes)
+        buffer.put(chunk);  // Add the chunk
         return buffer.array();
     }
 }
