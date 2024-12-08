@@ -37,8 +37,7 @@ public class Worker {
             byte[] chunk = new byte[buffer.remaining()];
             buffer.get(chunk);  // Get the chunk of data
 
-            System.out.println("new String(message)");
-            System.out.println("new String(message)" + (++times));
+            System.out.println("Receive Message");
             publisher.send(workerId+"",serializeChunk(chunk,lamportClock));
         }
     }
@@ -55,7 +54,7 @@ public class Worker {
     private String processChunk(byte[] chunk) {
         // For example: just convert the bytes to uppercase
         String processed = new String(chunk).toUpperCase();
-        System.out.println("---" + processed);
+        //System.out.println("---" + processed);
         return processed;
     }
 }
