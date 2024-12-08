@@ -46,7 +46,7 @@ public class Main {
                     Subscriber subscriber = new Subscriber(workerId+"",8888+workerId);
                     latch.countDown();
                     while (true) {
-                        byte[] result =  subscriber.run();;;  // Receive processed chunk from worker
+                        byte[] result =  subscriber.run();  // Receive processed chunk from worker
                         System.out.println("Arrays.toString(result)");
                         collectedData.add(result);
                     }
