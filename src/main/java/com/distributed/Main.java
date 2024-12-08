@@ -47,7 +47,6 @@ public class Main {
                     latch.countDown();
                     while (true) {
                         byte[] result =  subscriber.run();  // Receive processed chunk from worker
-                        System.out.println("Arrays.toString(result)");
                         collectedData.add(result);
                     }
                 }).start();
@@ -68,7 +67,6 @@ public class Main {
                         int workerId = new Random().nextInt(NUM_WORKERS);
                         lamportClock++;  // Increment Lamport clock
                         System.out.println("Sending chunk to worker " + workerId);
-                        System.out.println("Sending chunk to worker " + ++times);
                         // Connect to the worker's unique port (5556 + workerId)
                         publisher.send(workerId+"", serializeChunk(chunk, lamportClock));  // Send chunk to worker with topic as workerId
                     } catch (Exception e) {
@@ -122,7 +120,6 @@ public class Main {
 
             byte [] data = new byte[buffer.remaining()];
             buffer.get(data);  // Add the
-            System.out.println(lamportClock+"---"+data.length+"---"+collectedData.size());
             maps.put(lamportClock, data);
         }
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
