@@ -2,7 +2,6 @@ package com.distributed;
 
 import org.zeromq.ZMQ;
 
-import java.nio.ByteBuffer;
 import java.util.*;
 
 public class Worker {
@@ -30,12 +29,12 @@ public class Worker {
         while (true) {
 
             byte[] message = subscriber.run();
-            ByteBuffer buffer = ByteBuffer.wrap(message);
+            ByteArrayBuffer buffer = new ByteArrayBuffer(message);
             int receivedClock = buffer.getInt();
             lamportClock = Math.max(lamportClock, receivedClock) + 1;
 
             byte[] chunk = new byte[buffer.remaining()];
-            buffer.get(chunk);  // Get the chunk of data
+            chunk = buffer.getRemainingBytes();  // Get the chunk of data
 
             System.out.println("Receive Message");
             publisher.send(workerId+"",serializeChunk(chunk,lamportClock));
@@ -44,10 +43,10 @@ public class Worker {
 
     // Serialize the chunk and attach the Lamport clock value
     private byte[] serializeChunk(byte[] chunk, int lamportClock) {
-        ByteBuffer buffer = ByteBuffer.allocate(chunk.length + Integer.BYTES);
+        ByteArrayBuffer buffer = new ByteArrayBuffer(chunk.length + Integer.BYTES);
         buffer.putInt(lamportClock);  // Add Lamport clock (4 bytes)
         buffer.put(chunk);  // Add the chunk
-        return buffer.array();
+        return buffer.getArray();
     }
 
     // Process the chunk of data (for now, we convert it to uppercase)

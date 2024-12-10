@@ -3,7 +3,6 @@ package com.distributed;
 import org.zeromq.ZMQ;
 
 import java.io.*;
-import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -114,12 +113,12 @@ public class Main {
 
         int currentPosition = 0;
         for (byte[] chunk : collectedData) {
-            ByteBuffer buffer = ByteBuffer.wrap(chunk);
+            ByteArrayBuffer buffer = new ByteArrayBuffer(chunk);
 
             int lamportClock = buffer.getInt();  // Add Lamport clock (4 bytes)
 
             byte [] data = new byte[buffer.remaining()];
-            buffer.get(data);  // Add the
+            data = buffer.getRemainingBytes();  // Add the
             maps.put(lamportClock, data);
         }
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
@@ -134,9 +133,9 @@ public class Main {
 
     // Serialize the chunk and attach the Lamport clock value
     private byte[] serializeChunk(byte[] chunk, int lamportClock) {
-        ByteBuffer buffer = ByteBuffer.allocate(chunk.length + Integer.BYTES);
+        ByteArrayBuffer buffer = new ByteArrayBuffer(chunk.length + Integer.BYTES);
         buffer.putInt(lamportClock);  // Add Lamport clock (4 bytes)
         buffer.put(chunk);  // Add the chunk
-        return buffer.array();
+        return buffer.getArray();
     }
 }
